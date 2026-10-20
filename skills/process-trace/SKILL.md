@@ -30,12 +30,12 @@ Evidence moves belief about a case only through likelihoods, and the likelihoods
 7. **Dependence.** Items sharing an origin (one leak reported five times; a memoir and the interview built on it) count once: combine them before updating, in both routes.
 8. **Robustness for this case.** Rerun the trace under the contested restrictions from the model review (or call `/qualstack:robustness` for the full battery): does the direction of each update survive? Sensitivity often depends on what was found (`model-justification.md`).
 9. **What would change the conclusion.** The observation, not yet made or not obtainable, that would move the posterior across the decision threshold in `queries.md`; whether it was sought (and the search would have found it) or not.
-10. **Save** `.qualstack/process-trace-<case>.md` and a dated memo `evidence/memos/<date>-process-trace-<case>.md` (narrative reasoning, citing E-IDs). Write the path and counterfactual tables to `output/tables/trace-<case>.csv` for `/qualstack:viz`. Set `paper.status: "analyzing"` in `.qualstack/config.yaml` if it is at an earlier stage.
+10. **Save** `.qualstack/process-trace-<case>.md` and a dated memo `evidence/memos/<date>-process-trace-<case>.md` (narrative reasoning, citing E-IDs). Write the evidence path (`step, clue, value, posterior`) to `output/tables/trace-<case>.csv` and the counterfactual table to `output/tables/trace-<case>-counterfactual.csv`, for `/qualstack:viz` and the appendix. Set `paper.status: "analyzing"` in `.qualstack/config.yaml` if it is at an earlier stage.
 
 ## Outputs
 
 - `.qualstack/process-trace-<case>.md` — the question and `using` setting; sequence check; evidence path; counterfactual table; informal items with likelihood ranges and decibels; blind vs. author likelihoods; dependence decisions; sensitivity of each update; the conclusion-changing observation; the posterior in words sized to its value.
-- `evidence/memos/<date>-process-trace-<case>.md`; `output/tables/trace-<case>.csv`; `code/trace-case.R`.
+- `evidence/memos/<date>-process-trace-<case>.md`; `output/tables/trace-<case>.csv`, `output/tables/trace-<case>-counterfactual.csv`; `code/trace-case.R`.
 - Summary block: prior → posterior, the clue that moved it most, the clue that would have moved it most the other way, blind-assessment gaps, the conclusion in one hedged sentence.
 
 ## Anti-patterns

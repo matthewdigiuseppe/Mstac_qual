@@ -732,9 +732,14 @@ qs_plot_frontier <- function(tab, label = c("frontier", "all")) {
       out
     }))
   }
+  frontier_line <- function(x) {                   # panels with two or more undominated points
+    f <- x[x$frontier, ]
+    panel <- if (is.na(pc)) rep("", nrow(f)) else as.character(f[[pc]])
+    f <- f[panel %in% names(which(table(panel) >= 2)), ]
+    f[order(f$exp_cost, -f$exp_var), ]
+  }
   p <- ggplot(d, aes(x = exp_cost, y = exp_var)) +
-    geom_step(data = function(x) { f <- x[x$frontier, ]; f[order(f$exp_cost, -f$exp_var), ] },
-              direction = "hv", color = qs_colors[["accent"]], linewidth = 0.5) +
+    geom_step(data = frontier_line, direction = "hv", color = qs_colors[["accent"]], linewidth = 0.5) +
     geom_point(aes(shape = status, color = status), size = 2.3, stroke = 0.8) +
     geom_text(data = labels_of, aes(label = name), hjust = 0, vjust = -0.6, nudge_x = 0.02,
               size = 2.8, color = "grey20") +

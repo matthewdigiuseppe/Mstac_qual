@@ -21,7 +21,7 @@ an `r-coding-skills` skill installed, it wins on style. Start scripts from
 | `02-design.R` | `/qualstack:clue-select`, `/qualstack:case-select` | `model.rds`; `data/clean/analysis-data.csv` if cross-case data exist | `output/tables/clue-diagnosis.csv`, `output/tables/case-diagnosis.csv` |
 | `03-data.R` | `/qualstack:analyze` | `model.rds` (node names), `data/case-data.csv`, `data/raw/` | `data/clean/analysis-data.csv` |
 | `04-update.R` | `/qualstack:analyze` | `model.rds`, `queries.rds`, `analysis-data.csv` | `output/models/model-updated.rds`, `output/models/stan-warnings.txt`; `output/tables/queries.csv`, `queries.tex`, `case-answers.csv`, `parameters.csv`, `clue-value.csv` |
-| `05-robustness.R` | `/qualstack:robustness` | `model.rds`, `analysis-data.csv` | `output/models/robustness.rds`, `output/tables/robustness.csv` |
+| `05-robustness.R` | `/qualstack:robustness` | `model.rds`, `analysis-data.csv` | `output/models/robustness.rds`, `output/tables/robustness-*.csv` |
 | `06-figures.R` | `/qualstack:viz` | `output/models/*.rds`, `output/tables/*.csv`, `.qualstack/chronology-*.md` (timelines) | `output/figures/*.pdf`, `*.png`, `*-data.csv` |
 
 - **The number is the run order, and each script does one stage.** Cleaning

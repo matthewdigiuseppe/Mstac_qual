@@ -137,6 +137,7 @@ Each skill is invoked as `/qualstack:<name>` once the plugin is installed. Stage
 | `skills/process-trace/assets/trace-case.R` | process-trace, robustness | `qs_trace_case`, `qs_informal_trace` |
 | `skills/analyze/assets/03-data-template.R`, `04-update-template.R` | analyze | Data assembly with checks; the update and every output table |
 | `skills/robustness/assets/model-checks.R` | robustness, model-review | `qs_implied_independencies`, `qs_ci_tests`, `qs_ppc`, `qs_loo`, `qs_sensitivity` |
+| `skills/viz/assets/theme_qualstack.R` | viz | The theme and palette; DAG, prior/posterior, evidence-path, design, sensitivity, and timeline plots; `qs_save` (PDF, PNG, data CSV) |
 
 `tests/r/verify-book.R` checks the R tools against numbers published in *Integrated Inferences*.
 

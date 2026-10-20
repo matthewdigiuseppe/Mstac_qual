@@ -125,6 +125,7 @@ The design and analysis skills ship small, tested R functions on top of CausalQu
 | `skills/process-trace/assets/trace-case.R` | `qs_trace_case`, `qs_informal_trace` | II Fig. 16.10 |
 | `skills/analyze/assets/03-data-template.R`, `04-update-template.R` | the data and update scripts | II ch. 10 democratization results |
 | `skills/robustness/assets/model-checks.R` | `qs_implied_independencies`, `qs_ci_tests`, `qs_ppc`, `qs_loo`, `qs_sensitivity` | II Tables 16.1–16.2, Figs. 16.1, 16.3, 16.9, LOO |
+| `skills/viz/assets/theme_qualstack.R` | grayscale-safe theme; `qs_plot_dag`, `qs_plot_prior_posterior`, `qs_plot_evidence_path`, `qs_plot_frontier`, `qs_plot_sensitivity`, `qs_plot_timeline`, `qs_save` | — |
 
 `tests/r/verify-book.R` checks them against the published numbers; `python3 tests/run_tests.py` runs it when R and CausalQueries are installed.
 
