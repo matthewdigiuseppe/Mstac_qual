@@ -28,7 +28,7 @@ The prosecution of the model; the user is the defense. Every case-level conclusi
 7. **Testable implications.** Copy `${CLAUDE_PLUGIN_ROOT}/skills/robustness/assets/model-checks.R` to `code/model-checks.R` and list `qs_implied_independencies(model)`. For each, the data that could test it, and whether the data the project will have are selected on a collider (clues gathered only where the outcome occurred cannot test unconditional independencies).
 8. **Rival models.** Name the variants `/qualstack:robustness` must run: each soft restriction dropped or softened to a quantitative prior; each plausible missing arrow added; each exclusion relaxed with `<->`; the rival theories as alternative models. Name the assumption most in need of defense.
 9. **Verdict.** **Pass** (every charge answered; restrictions grounded; clues informative for a stated reason), **Conditional pass** (named fixes: a missing arrow, a softened restriction, a measurement node; list them), **Fail** (clues uninformative under the model with no plan to learn their value, ungrounded restrictions doing the work, or a structure the theory contradicts: return to `/qualstack:causal-model`).
-10. **Save** `.qualstack/model-review-<YYYY-MM-DD>.md`, ending with the line `Verdict: pass | conditional | fail`.
+10. **Save** `.qualstack/model-review-<YYYY-MM-DD>.md`: the line `Verdict: pass | conditional | fail` comes first, right under the title, because `/qualstack:paper-status` reads the first line that mentions a verdict; the words "verdict" and "recommendation" appear on no other line.
 
 ## Outputs
 

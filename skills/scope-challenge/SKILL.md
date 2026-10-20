@@ -34,7 +34,7 @@ Soft verdicts produce sprawling projects; be opinionated.
 
 ## Outputs
 
-- `.qualstack/scope-challenge-<date>.md` — challenges, answers, verdict.
+- `.qualstack/scope-challenge-<date>.md` — the line `Verdict: tight | sprawl | multi-output` comes first, right under the title, because `/qualstack:paper-status` reads the first line that mentions a verdict; the words "verdict" and "recommendation" appear on no other line; then challenges and answers.
 - Summary block: verdict + the single most important cut.
 
 ## Anti-patterns

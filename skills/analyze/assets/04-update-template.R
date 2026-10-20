@@ -102,4 +102,4 @@ pull <- do.call(rbind, lapply(CELLS, function(cl) do.call(rbind, lapply(CLUES, f
 write.csv(pull, here("output", "tables", "clue-value.csv"), row.names = FALSE)
 print(pull, digits = 3, row.names = FALSE)
 
-writeLines(capture.output(sessionInfo()), here("output", "models", "session-info-update.txt"))
+writeLines(capture.output(sessionInfo()), here("output", "session-info.txt"))

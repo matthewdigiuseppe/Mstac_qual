@@ -12,7 +12,9 @@
 #                                restriction fixes an effect's sign, <-> as dashed arcs
 #   qs_dag_data(), qs_dag_layout(), qs_restrictions()   the DAG's data and the restriction table
 #   qs_plot_prior_posterior()    prior against posterior for one or more queries
-#   qs_path_data(), qs_plot_evidence_path()   the case query after each clue, in the order sought
+#                                (from the updated model, or from queries.csv)
+#   qs_plot_evidence_path()      the case query after each clue, in the order sought
+#                                (qs_trace_case or qs_informal_trace output)
 #   qs_plot_clue_learning()      expected learning by clue (qs_clue_table) or strategy
 #                                (qs_strategy_table)
 #   qs_plot_frontier()           two-step clue strategies (qs_two_step): expected cost
@@ -114,6 +116,12 @@ qs_save <- function(plot, name, data = NULL, width = 6.5, height = 4, dpi = 300,
 .qs_first_col <- function(d, candidates) {
   hit <- intersect(candidates, names(d))
   if (length(hit)) hit[1] else NA_character_
+}
+# The column that splits a design table into case types (clue-select stacks one
+# table per case type), when it has more than one value.
+.qs_panel_col <- function(d, candidates = c("case_type", "given", "cell")) {
+  hit <- Filter(function(cl) cl %in% names(d) && length(unique(d[[cl]])) > 1, candidates)
+  if (length(hit)) hit[[1]] else NA_character_
 }
 .qs_need <- function(d, cols, fn) {
   miss <- setdiff(cols, names(d))
@@ -461,16 +469,47 @@ qs_plot_dag <- function(model, x = NULL, y = NULL, labels = NULL, highlight = NU
 
 # ---- prior against posterior -----------------------------------------------------------------
 
-# queries: a named list or character vector, as for query_model(). The prior
-# is drawn fresh at each call, so pass seed = model.seed. type = "density"
-# overlays the two distributions (the plot data are the draws); "interval"
-# shows mean, 50% and 95% equal-tailed intervals (the same intervals
-# query_model() reports; the plot data are those summaries). Population and
-# subgroup queries only: a named case's probability has no distribution here.
-qs_plot_prior_posterior <- function(model, queries, given = NULL,
+# x: the updated model, or output/tables/queries.csv (query_model() output with
+# using = c("priors", "posteriors")). From the model, queries is a named list
+# or character vector as for query_model(); the prior is drawn fresh at each
+# call, so pass seed = model.seed. type = "density" overlays the two
+# distributions (the plot data are the draws); "interval" shows mean, 50% and
+# 95% equal-tailed intervals (the plot data are those summaries). From
+# queries.csv the figure is always intervals, the table's own 95% intervals,
+# so every number on it is in the table; queries selects labels.
+# Population and subgroup queries only: a named case's probability has no
+# distribution here.
+qs_plot_prior_posterior <- function(x, queries = NULL, given = NULL,
                                     type = c("density", "interval"),
                                     seed = NULL, n_draws = 4000) {
   type <- match.arg(type)
+  role_col <- c(prior = qs_colors[["prior"]], posterior = qs_colors[["posterior"]])
+  if (is.data.frame(x)) {
+    .qs_need(x, c("using", "mean", "cred.low", "cred.high"), "qs_plot_prior_posterior")
+    s <- as.data.frame(x)
+    case_level <- if ("case_level" %in% names(s)) s$case_level %in% TRUE else rep(FALSE, nrow(s))
+    s <- s[s$using %in% c("priors", "posteriors", "prior", "posterior") & !case_level, ]
+    lab <- if ("label" %in% names(s)) as.character(s$label) else as.character(s$query)
+    if (!is.null(queries)) { keep <- lab %in% unlist(queries); s <- s[keep, ]; lab <- lab[keep] }
+    g <- if ("given" %in% names(s)) as.character(s$given) else rep("-", nrow(s))
+    s$query <- ifelse(g %in% c("-", "", NA), lab, paste0(lab, " | ", g))
+    s$using <- factor(ifelse(grepl("^prior", s$using), "prior", "posterior"), levels = c("prior", "posterior"))
+    s$query <- factor(s$query, levels = rev(unique(s$query)))
+    s$ypos <- as.numeric(s$query) + ifelse(s$using == "prior", 0.15, -0.15)
+    rownames(s) <- NULL
+    return(ggplot(s, aes(y = ypos, color = using)) +
+      geom_linerange(aes(xmin = cred.low, xmax = cred.high), linewidth = 0.6) +
+      geom_point(aes(x = mean, shape = using), fill = "white", size = 2.4, stroke = 0.8) +
+      scale_y_continuous(breaks = seq_along(levels(s$query)), labels = levels(s$query),
+                         expand = expansion(add = 0.5)) +
+      scale_color_manual(values = role_col) +
+      scale_shape_manual(values = c(prior = 21, posterior = 16)) +
+      labs(x = "Value of the query", y = NULL,
+           caption = "Point: mean; bar: 95% credible interval (equal-tailed), as in the queries table.") +
+      theme_qualstack(grid = "x"))
+  }
+  model <- x
+  if (is.null(queries)) stop("qs_plot_prior_posterior(): name the queries to plot", call. = FALSE)
   queries <- as.list(queries)
   if (is.null(names(queries))) names(queries) <- unlist(queries)
   qn <- names(queries)
@@ -494,7 +533,6 @@ qs_plot_prior_posterior <- function(model, queries, given = NULL,
   }
   d$query <- factor(d$query, levels = qn)
   d$using <- factor(ifelse(d$using == "priors", "prior", "posterior"), levels = c("prior", "posterior"))
-  role_col <- c(prior = qs_colors[["prior"]], posterior = qs_colors[["posterior"]])
   role_lty <- c(prior = "dashed", posterior = "solid")
   if (type == "density") {
     p <- ggplot(d, aes(x = value, color = using, fill = using, linetype = using))
@@ -543,52 +581,38 @@ qs_plot_prior_posterior <- function(model, queries, given = NULL,
 
 # ---- the evidence path of one case ---------------------------------------------------------------
 
-# The case query after each clue, in the order sought. clues: a named vector
-# in that order, e.g. c(M = 1, P = 0); NA = sought but not observable (no
-# update). using = "parameters" for single-case process tracing at the prior
-# means; "posteriors" with case_level = FALSE for a case in the updating data
-# (with case_level = TRUE only for a new case). Order does not change the
-# final answer; the path shows what each clue did.
-qs_path_data <- function(model, query, given = NULL, clues, using = "parameters",
-                         case_level = FALSE, evidence_id = NULL, seed = NULL) {
-  base <- if (is.null(given) || identical(given, TRUE) || given %in% c("", "TRUE")) character(0) else given
-  vals <- unlist(clues)
-  conds <- vapply(0:length(vals), function(s) {
-    seen <- vals[seq_len(s)]
-    seen <- seen[!is.na(seen)]
-    parts <- c(base, if (length(seen)) paste0(names(seen), "==", seen))
-    if (length(parts)) paste(parts, collapse = " & ") else "TRUE"
-  }, character(1))
-  if (using %in% c("priors", "prior")) {
-    if (!is.null(seed)) set.seed(seed)
-    model <- CausalQueries::set_prior_distribution(model)  # one set of draws for every step
+# path: the evidence path /qualstack:process-trace saved in
+# output/tables/trace-<case>.csv: qs_trace_case()'s path (step, clue, value,
+# posterior; step 0 is the prior), rows of the counterfactual table in the
+# same file are skipped; or qs_informal_trace() output (id, posterior,
+# posterior_low, posterior_high), which has no prior row: pass prior =.
+# Optional columns: evidence_id (shown under each clue), lower and upper (the
+# posterior at the ends of the likelihood ranges), case (one panel per case).
+# threshold draws the decision line the text uses, if any. The order of the
+# steps is the order sought; it does not change the final answer.
+qs_plot_evidence_path <- function(path, prior = NULL, threshold = NULL,
+                                  ylab = "Probability the query is true") {
+  d <- as.data.frame(path, stringsAsFactors = FALSE)
+  if (!"step" %in% names(d) && all(c("id", "posterior") %in% names(d))) {   # qs_informal_trace()
+    d$step <- seq_len(nrow(d)); d$clue <- as.character(d$id); d$value <- NA
   }
-  post <- vapply(conds, function(gv) {
-    res <- CausalQueries::query_model(model, queries = list(q = query),
-                                      given = if (gv == "TRUE") NULL else gv,
-                                      using = using, case_level = case_level)
-    as.data.frame(res)$mean[1]
-  }, numeric(1))
-  data.frame(step = 0:length(vals), clue = c("prior", names(vals)), value = c(NA, vals),
-             evidence_id = c(NA, if (is.null(evidence_id)) rep(NA, length(vals)) else evidence_id),
-             given = conds, posterior = unname(post), row.names = NULL)
-}
-
-# path: a data frame with step, clue, value, posterior (from qs_path_data(), or
-# the running posterior of an informal process-trace memo); optional
-# evidence_id (shown under each clue), lower and upper (the posterior at the
-# ends of informal likelihood ranges), and case (one panel per case).
-# threshold draws the decision line the text uses, if any.
-qs_plot_evidence_path <- function(path, threshold = NULL, ylab = "Probability the query is true") {
-  .qs_need(path, c("step", "clue", "value", "posterior"), "qs_plot_evidence_path")
-  d <- as.data.frame(path)
+  if ("posterior_low" %in% names(d) && !"lower" %in% names(d)) d$lower <- d$posterior_low
+  if ("posterior_high" %in% names(d) && !"upper" %in% names(d)) d$upper <- d$posterior_high
+  .qs_need(d, c("step", "clue", "posterior"), "qs_plot_evidence_path")
+  if (!"value" %in% names(d)) d$value <- NA
   if (!"case" %in% names(d)) d$case <- ""
+  d <- d[!is.na(d$step) & !is.na(d$posterior), ]                 # path rows only
+  if (!is.null(prior)) for (cs in unique(d$case)) if (!any(d$step[d$case == cs] == 0)) {
+    row <- d[d$case == cs, ][1, ]
+    row[] <- NA; row$case <- cs; row$step <- 0; row$clue <- "prior"; row$posterior <- prior
+    d <- rbind(row, d)
+  }
   d <- d[order(d$case, d$step), ]
-  is_prior <- d$step == 0 | is.na(d$clue) | tolower(d$clue) == "prior"
-  if (!any(is_prior)) warning("qs_plot_evidence_path(): no prior row (step 0); the path should start at the prior")
+  is_prior <- d$step == 0
+  if (!any(is_prior)) warning("qs_plot_evidence_path(): no prior row (step 0); pass prior = so the path starts at the prior")
   clue <- vapply(as.character(d$clue), function(s) paste(strwrap(s, 16), collapse = "\n"), "")
   d$label <- ifelse(is_prior, "Prior",
-                    ifelse(is.na(d$value), paste0(clue, "\nnot observed"),
+                    ifelse(is.na(d$value) | d$value %in% "", clue,      # informal items: the item itself
                            ifelse(nchar(d$clue) > 6, paste0(clue, "\n= ", d$value),
                                   paste0(clue, " = ", d$value))))
   if ("evidence_id" %in% names(d))
@@ -668,7 +692,8 @@ qs_plot_clue_learning <- function(tab, highlight = NULL) {
     labs(x = "Expected learning (share of the prior variance removed)", y = NULL,
          caption = .qs_wrap(paste0(cap, if (length(highlight)) " Highlighted: the choice in the clue plan."))) +
     theme_qualstack(grid = "x")
-  if ("given" %in% names(d) && length(unique(d$given)) > 1) p <- p + facet_wrap(~ given)
+  pc <- .qs_panel_col(d)
+  if (!is.na(pc)) p <- p + facet_wrap(stats::as.formula(paste("~", pc)))
   p
 }
 
@@ -696,13 +721,16 @@ qs_plot_frontier <- function(tab, label = c("frontier", "all")) {
   d$name <- .qs_strategy_names(d)
   d$status <- factor(ifelse(d$frontier, "undominated", "dominated"), levels = c("undominated", "dominated"))
   rownames(d) <- NULL
-  labels_of <- function(x) {
+  pc <- .qs_panel_col(d)
+  labels_of <- function(x) {                       # one label per point; ties share it
     x <- if (label == "frontier") x[x$frontier, ] else x
-    key <- paste(round(x$exp_cost, 6), round(x$exp_var, 9))
-    agg <- do.call(rbind, lapply(split(x, key), function(z)
-      data.frame(exp_cost = z$exp_cost[1], exp_var = z$exp_var[1], frontier = z$frontier[1],
-                 name = paste(z$name, collapse = " | "))))
-    agg
+    key <- paste(if (is.na(pc)) "" else x[[pc]], round(x$exp_cost, 6), round(x$exp_var, 9))
+    do.call(rbind, lapply(split(x, key), function(z) {
+      out <- data.frame(exp_cost = z$exp_cost[1], exp_var = z$exp_var[1], frontier = z$frontier[1],
+                        name = paste(z$name, collapse = " | "))
+      if (!is.na(pc)) out[[pc]] <- z[[pc]][1]
+      out
+    }))
   }
   p <- ggplot(d, aes(x = exp_cost, y = exp_var)) +
     geom_step(data = function(x) { f <- x[x$frontier, ]; f[order(f$exp_cost, -f$exp_var), ] },
@@ -719,6 +747,7 @@ qs_plot_frontier <- function(tab, label = c("frontier", "all")) {
          caption = .qs_wrap(paste0("\"M; P if M=1\": seek M, then seek P only if M is found. Line: the ",
                                    "lowest expected variance attainable at each budget."))) +
     theme_qualstack()
+  if (!is.na(pc)) p <- p + facet_wrap(stats::as.formula(paste("~", pc)), scales = "free")
   p
 }
 
@@ -946,7 +975,11 @@ qs_plot_timeline <- function(events, markers = NULL, wrap = 48) {
   d <- d[order(d$case, d$start, d$end), ]
   ev <- if ("evidence_id" %in% names(d)) ifelse(is.na(d$evidence_id) | !nzchar(d$evidence_id), "",
                                                  paste0(" [", d$evidence_id, "]")) else ""
-  d$label <- vapply(paste0(d$event, ev), function(s) paste(strwrap(s, wrap), collapse = "\n"), "")
+  node <- if ("node" %in% names(d)) ifelse(is.na(d$node) | !nzchar(d$node), "", paste0(d$node, ": ")) else ""
+  rec <- if ("record_or_recollection" %in% names(d))
+    grepl("^recollect", tolower(as.character(d$record_or_recollection))) else rep(FALSE, nrow(d))
+  d$label <- vapply(paste0(node, d$event, ifelse(rec, " (recollection)", ""), ev),
+                    function(s) paste(strwrap(s, wrap), collapse = "\n"), "")
   d$row <- factor(seq_len(nrow(d)), levels = rev(seq_len(nrow(d))))
   d$dated <- factor(ifelse(d$inferred, "inferred", "attested"), levels = c("attested", "inferred"))
   d$span <- d$end > d$start
@@ -979,7 +1012,9 @@ qs_plot_timeline <- function(events, markers = NULL, wrap = 48) {
     labs(x = NULL, y = NULL,
          caption = .qs_wrap(paste0("Point: an event dated to the day. Bar: dated only to the month, ",
                                    "the year, or a stated span; events whose bars overlap have no ",
-                                   "established order. Hollow point or dashed bar: an inferred date."))) +
+                                   "established order. Hollow point or dashed bar: an inferred date.",
+                                   if (any(rec)) " (recollection): attested only by sources written later.",
+                                   if ("evidence_id" %in% names(d)) " Brackets: evidence IDs."))) +
     theme_qualstack(grid = "x") +
     theme(axis.text.y = element_text(size = rel(0.8), lineheight = 0.9),
           plot.margin = margin(5.5, 16, 5.5, 5.5))

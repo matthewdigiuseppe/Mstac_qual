@@ -87,7 +87,7 @@ Open `.qualstack/config.yaml` in the new folder and fill in the title, your name
 | | `/qualstack:learn` | Per-project conventions Claude should remember |
 | | `/qualstack:qualstack-upgrade` | Self-update |
 
-Full table with voices and triggers: [docs/skills.md](docs/skills.md). Why it is built this way: [docs/philosophy.md](docs/philosophy.md).
+Full table with voices and triggers: [docs/skills.md](docs/skills.md). Why it is built this way: [docs/philosophy.md](docs/philosophy.md). What the formal skills produce on a real problem: [docs/example.md](docs/example.md).
 
 ## Project scaffold
 

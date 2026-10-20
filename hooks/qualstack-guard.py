@@ -15,8 +15,11 @@ Enforces, inside any QualStack project folder (a directory tree containing
   2. Evidence and source inputs are read-only once they exist: evidence/raw/
      (documents, transcripts, and field notes as received or as written on the
      day), data/raw/ (datasets as acquired), and lit/pdf/ (source PDFs) are
-     never edited, overwritten, or removed. New files may still be added; that
-     is how /qualstack:evidence-log and /qualstack:pdf-ingest work. Always on.
+     never edited, overwritten, moved, or removed (file tools; rm, sed -i,
+     truncate; mv, an overwriting cp, tee, or a redirection onto an existing
+     file). New files may still be added, including a corrected copy beside
+     an original; that is how /qualstack:evidence-log and /qualstack:pdf-ingest
+     work. Always on.
   3. A registered preregistration is the contract. Once design.prereg_url is
      set in .qualstack/config.yaml, existing files under prereg/ are read-only;
      deviations go in a new dated addendum. Always on.

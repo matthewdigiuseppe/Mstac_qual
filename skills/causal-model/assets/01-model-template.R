@@ -63,5 +63,5 @@ print(prior_q[, intersect(c("label", "given", "mean"), names(prior_q))], row.nam
 saveRDS(model, here("output", "models", "model.rds"))
 # code/04-update.R asks the same questions of the updated model.
 saveRDS(list(queries = QUERIES, givens = GIVENS), here("output", "models", "queries.rds"))
-writeLines(capture.output(sessionInfo()), here("output", "models", "session-info.txt"))
+writeLines(capture.output(sessionInfo()), here("output", "session-info.txt"))
 cat("Saved output/models/model.rds\n")

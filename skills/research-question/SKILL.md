@@ -40,7 +40,7 @@ Do not soften the verdict; if the answers do not justify the fieldwork, say so.
 
 ## Outputs
 
-- `.qualstack/research-question.md` — questions, answers, the primary query in words, the verdict, the date.
+- `.qualstack/research-question.md` — the line `Verdict: green | yellow | red` comes first, right under the title, because `/qualstack:paper-status` reads the first line that mentions a verdict; the words "verdict" and "recommendation" appear on no other line; then questions, answers, the primary query in words, the date.
 - Summary block: verdict, the query in one counterfactual sentence, next step.
 
 ## Anti-patterns
