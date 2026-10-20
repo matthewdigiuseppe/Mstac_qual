@@ -1,0 +1,72 @@
+## QualStack per-project config.
+## Edit at the start of a project; revisit after major decisions.
+
+paper:
+  title: ""
+  short_name: ""           # for filenames; e.g. "wartime-taxation"
+  format: "latex"          # "latex" | "quarto"
+  status: "ideating"       # ideating | modeling | designing | collecting | analyzing | writing | submitted | r-and-r | accepted | archived
+
+authors:
+  - name: ""               # your name
+    role: "lead"
+  # - name: "Coauthor Name"
+  #   role: "coauthor"
+
+target_journals:
+  # Tier in priority order. /qualstack:journal-fit will populate this.
+  # - name: "Comparative Political Studies"
+  #   tier: 1
+  #   why: ""
+
+design:
+  type: ""                 # process-tracing | comparative | multi-method | comparative-historical
+  fieldwork: false         # true when interviews, archives, or observation are planned
+  human_subjects: false    # true when living people are interviewed or observed
+  prereg: false            # true once /qualstack:preregister has drafted the plan
+  prereg_url: ""           # paste the registry URL once filed; the guard hook then locks prereg/
+
+model:
+  # Summaries of what code/01-model.R and .qualstack/queries.md hold; the code is the truth.
+  formal: true             # false = informal Bayesian process tracing only (no CausalQueries code)
+  statement: ""            # CausalQueries DAG statement, e.g. "X -> M -> Y; X -> Y"
+  primary_query: ""        # e.g. "Y[X=1] > Y[X=0] | X==1 & Y==1"
+  seed: 20250101           # every stochastic step (Stan updating, simulation) uses this
+
+privacy:
+  # Identifiable material lives in restricted/, which Claude never reads (the guard
+  # hook enforces it). /qualstack:deidentify runs bin/qualstack-redact, which reads
+  # these two paths itself and reports only counts.
+  key: "restricted/key.csv"            # columns: real,pseudonym[,kind]
+  originals: "restricted/originals"    # unredacted transcripts and notes (.txt / .md)
+  ai_processing: ""        # what your protocol and consent allow: none | pseudonymized | full
+  protocol: ""             # ethics / IRB protocol number (kept out of the anonymized manuscript)
+
+evidence:
+  id_prefix: "E"           # evidence items: E001, E002, ... (cited in the paper as \ev{E001})
+  person_prefix: "P"       # people: P01, P02, ... (never a real name outside restricted/)
+
+stats:
+  language: "R"
+  package: "CausalQueries" # Humphreys & Jacobs's companion package; Stan does the updating
+
+library:
+  # /qualstack:pdf-ingest converts lit/pdf/*.pdf into lit/md/*.md (and archival
+  # PDFs in evidence/raw/ into evidence/md/).
+  backend: "auto"          # auto | pymupdf4llm | docling | marker | mineru | pdftotext
+  quality_min: 0.70        # escalate to a heavier backend below this score
+  split_references: true   # keep reference lists out of the main .md
+  crossref: true           # look up metadata by DOI (sends the DOI only)
+  crossref_mailto: ""      # your email, to use Crossref's polite pool
+
+decisions:
+  # Append a one-liner every time you make a non-obvious call.
+  # - "2026-05-09: dropped the 1973 episode; the coup is coded as regime change, not transition."
+
+voice:
+  # Name of a Claude Code skill that defines your prose voice. QualStack does not
+  # ship one; leave empty for a generic academic voice.
+  writing_style: ""
+  # Name of a reviewer-style skill for /qualstack:referee-mock. Leave empty to use
+  # QualStack's built-in fallback (references/referee-report-conventions.md).
+  reviewer_style: ""

@@ -1,0 +1,3 @@
+# Read by ripgrep (and so by Claude Code's Grep tool) and other search tools:
+# recursive searches from the project root skip identifiable material.
+restricted/

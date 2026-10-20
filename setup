@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# QualStack setup — puts the bin/ scripts on PATH and tells you how to register
+# the skills.
+#
+# Skills come from Claude Code's plugin system, not from this script: QualStack
+# is a plugin (.claude-plugin/plugin.json plus skills/<name>/SKILL.md), and
+# installing it that way is what namespaces the commands as /qualstack:<name>.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "QualStack setup"
+echo "  source: $HERE"
+
+# Make bin scripts executable.
+chmod +x "$HERE"/bin/* 2>/dev/null || true
+chmod +x "$HERE"/setup
+
+n_skills="$(find "$HERE/skills" -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l | tr -d ' ')"
+
+echo ""
+echo "1. Register the skills (in Claude Code, one line at a time):"
+echo "     /plugin marketplace add matthewdigiuseppe/Mstac_qual"
+echo "     /plugin install qualstack@qualstack"
+echo ""
+echo "   To install from this clone instead of GitHub, point the first command"
+echo "   at this directory:"
+echo "     /plugin marketplace add $HERE"
+echo "     /plugin install qualstack@qualstack"
+echo "   Then all $n_skills commands are available as /qualstack:<name>; /plugin lists them."
+echo ""
+
+# Suggest PATH addition for the command-line tools.
+case ":$PATH:" in
+  *":$HERE/bin:"*)
+    echo "2. Command-line tools: $HERE/bin is already on your PATH."
+    ;;
+  *)
+    echo "2. Command-line tools (qualstack-init, qualstack-status, qualstack-pdf2md,"
+    echo "   qualstack-redact, qualstack-quotecheck) — add bin/ to your PATH:"
+    echo "     echo 'export PATH=\"$HERE/bin:\$PATH\"' >> ~/.zshrc"
+    ;;
+esac
+
+echo ""
+echo "3. For the formal analyses, install R (>= 4.2) and CausalQueries:"
+echo "     install.packages(\"CausalQueries\")   # pulls in rstan; the first install compiles"
+echo ""
+echo "Done."

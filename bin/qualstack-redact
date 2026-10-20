@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""qualstack-redact — pseudonymize transcripts without the model ever seeing them.
+
+Backs /qualstack:deidentify. The identity key and the unredacted originals live
+in restricted/, which QualStack's guard hook keeps out of Claude's context. This
+script is the one bridge across that wall, and it is built so that nothing
+identifying crosses it: it finds the key and the originals through
+.qualstack/config.yaml (privacy.key, privacy.originals), so its command line
+never names restricted/; it writes pseudonymized copies where you point it; and
+everything it prints is counts, file names it wrote, and pseudonyms. Real
+names never reach stdout or stderr.
+
+The key is a CSV with a header and the columns real,pseudonym[,kind]:
+
+    real,pseudonym,kind
+    Jane Q. Official,P07,person
+    Ministry of the Interior,[Ministry A],organization
+
+Matching is on whole words, longest key first, so "Jane Q. Official" is
+replaced before "Jane". Multi-word variants match in any case; a one-word
+variant matches as written and in capitals only, so a surname that is also a
+common word does not swallow the common word. A row may list variants
+separated by "|" in the real column ("Jane Official|J. Official|Official").
+
+Subcommands:
+
+  apply  Pseudonymize every .txt / .md file under privacy.originals into OUT
+         (default evidence/raw/interviews). Never overwrites an existing output
+         file. Writes restricted/redaction-review.txt, for your eyes only:
+         capitalized words left in each output that are not in the key and not
+         common sentence-initial words, i.e. candidate names the key missed.
+         Prints only how many there are.
+  check  Scan files or folders (default: paper/ evidence/ data/ .qualstack/
+         output/) for any keyed real name. Prints file:line and the PSEUDONYM
+         the leaked name belongs to, never the name. Exit 1 on any hit.
+  status Report what the key and originals contain, as counts.
+
+Pseudonymization is not anonymization: titles, dates, places, and turns of
+phrase identify people too. Review every output before it is used.
+
+Usage:
+  qualstack-redact apply [--out evidence/raw/interviews] [--project DIR]
+  qualstack-redact check [PATH ...] [--project DIR]
+  qualstack-redact status [--project DIR]
+
+Standard library only.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import re
+import sys
+from pathlib import Path
+
+TEXT_SUFFIXES = {".txt", ".md", ".markdown"}
+CHECK_SUFFIXES = {".txt", ".md", ".markdown", ".tex", ".qmd", ".csv", ".bib", ".R", ".r",
+                  ".yaml", ".yml", ".json", ".jsonl", ".html"}
+DEFAULT_CHECK = ["paper", "evidence", "data", ".qualstack", "output", "submission", "prereg"]
+# A path component that may be printed: lowercase letters, digits, "-", "_",
+# with at least one digit. "int-07", "t12", "2024-wave2" pass; "smith" does not.
+NEUTRAL_NAME = re.compile(r"(?=[a-z0-9_-]*\d)[a-z0-9][a-z0-9_-]{0,40}")
+
+
+def is_neutral(stem: str, prefixes) -> bool:
+    """Neutral as above, or hyphenated parts that are each lowercase/digits or a
+    project ID with its capital prefix (evidence.id_prefix, evidence.person_prefix):
+    "E014-p07-2025-03-14" passes; "JS-07" and "Smith-2024" do not."""
+    if NEUTRAL_NAME.fullmatch(stem):
+        return True
+    ids = re.compile("(?:" + "|".join(re.escape(x) for x in prefixes if x) + r")\d{2,}")
+    parts = stem.split("-")
+    return (len(stem) <= 41 and any(c.isdigit() for c in stem)
+            and all(ids.fullmatch(x) or re.fullmatch(r"[a-z0-9_]+", x) for x in parts))
+
+# Capitalized words that are not names: sentence starters, pronouns, months,
+# days, interview-transcript furniture. Candidates outside this set and outside
+# the key are written to the review file for a human to look at.
+COMMON = set("""
+A About After Again Ah All Also Although Am An And Another Answer Any Anyway April Are As At August
+Back Be Because Before Being Both But By Can Could December Did Do Does Don't During Each
+Either Else Even Every Exactly February First For Friday From Good Had Has Have He Her Here
+Hers Him His How However I I'd I'll I'm I've If In Indeed Interviewer Interviewee Is It It's
+Its January July June Just Last Let Like March May Maybe Me Monday More Most Mr Mrs Ms Much
+My No Nor Not Nothing November Now OK Ok Okay October Of Oh On Once One Only Or Other Our
+Perhaps Q Question R Really Respondent Right Saturday September She Should Since So Some Sometimes Speaker Still Sunday
+Sure Than Thank Thanks That That's The Their Them Then There There's These They This Those
+Though Thursday To Today Tuesday Um Uh Under Until Up Very Was We We're Wednesday Well Were
+What When Where Whether Which While Who Why Will With Without Would Yeah Yes Yet You Your
+""".split())
+
+
+def find_project(start: Path):
+    p = start.resolve()
+    for c in [p, *p.parents]:
+        if (c / ".qualstack").is_dir():
+            return c
+    return None
+
+
+def read_privacy(project: Path) -> dict:
+    """privacy.* and the evidence ID prefixes from .qualstack/config.yaml (no PyYAML)."""
+    cfg = {"key": "restricted/key.csv", "originals": "restricted/originals", "ai_processing": "",
+           "id_prefix": "E", "person_prefix": "P"}
+    try:
+        lines = (project / ".qualstack" / "config.yaml").read_text().splitlines()
+    except OSError:
+        return cfg
+    section = None
+    for raw in lines:
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        line = raw.split(" #")[0].strip()
+        if indent == 0:
+            section = line.rstrip(":") if line.endswith(":") else None
+            continue
+        key, _, value = line.partition(":")
+        if section in ("privacy", "evidence") and key.strip() in cfg:
+            cfg[key.strip()] = value.strip().strip("\"'")
+    return cfg
+
+
+def load_key(path: Path):
+    """[(variant, pseudonym)] longest variant first. Raises SystemExit, never echoing content."""
+    if not path.is_file():
+        raise SystemExit(f"no key file at {path.name} (privacy.key); create it by hand — see restricted/README.md")
+    pairs = []
+    with path.open(newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        cols = [c.strip().lower() for c in (reader.fieldnames or [])]
+        if "real" not in cols or "pseudonym" not in cols:
+            raise SystemExit("key file needs a header with at least the columns real,pseudonym")
+        for n, row in enumerate(reader, start=2):
+            row = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
+            real, pseud = row.get("real", ""), row.get("pseudonym", "")
+            if not real:
+                continue
+            if not pseud:
+                raise SystemExit(f"key row {n} has no pseudonym")
+            for variant in real.split("|"):
+                variant = variant.strip()
+                if len(variant) >= 2:
+                    pairs.append((variant, pseud))
+    if not pairs:
+        raise SystemExit("key file has no usable rows")
+    pairs.sort(key=lambda p: len(p[0]), reverse=True)
+    return pairs
+
+
+def pattern_for(variant: str):
+    """Multi-word variants match in any case. A one-word variant matches only as
+    written in the key and in capitals, so a surname that is also a common word
+    ("Official", "Rich", "Young") does not swallow the common word; add a
+    lowercase variant to the key if transcripts use one."""
+    parts = variant.split()
+    if len(parts) == 1:
+        forms = sorted({re.escape(variant), re.escape(variant.upper())}, key=len, reverse=True)
+        return re.compile(r"(?<![\w])(?:" + "|".join(forms) + r")(?![\w])")
+    return re.compile(r"(?<![\w])" + r"\s+".join(re.escape(w) for w in parts) + r"(?![\w])",
+                      re.IGNORECASE)
+
+
+def redact_text(text: str, compiled):
+    counts = {}
+    for pat, pseud in compiled:
+        text, n = pat.subn(pseud, text)
+        if n:
+            counts[pseud] = counts.get(pseud, 0) + n
+    return text, counts
+
+
+def residual_candidates(text: str, pseudonyms: set):
+    """Capitalized tokens that could be names the key missed."""
+    found = {}
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        for m in re.finditer(r"\b[A-Z][a-z]+(?:[-'][A-Z]?[a-z]+)?\b", line):
+            word = m.group(0)
+            if word in COMMON or word in pseudonyms:
+                continue
+            found.setdefault(word, []).append(line_no)
+    return found
+
+
+def cmd_apply(project: Path, privacy: dict, out_arg: str) -> int:
+    if privacy.get("ai_processing", "").lower() == "none":
+        print("privacy.ai_processing is 'none': your protocol does not allow AI processing of "
+              "material derived from these interviews. Nothing was written.", file=sys.stderr)
+        return 2
+    key_path = project / privacy["key"]
+    originals = project / privacy["originals"]
+    pairs = load_key(key_path)
+    compiled = [(pattern_for(v), p) for v, p in pairs]
+    pseudonyms = {w for _, p in pairs for w in re.findall(r"\w+", p)}
+    if not originals.is_dir():
+        raise SystemExit("privacy.originals does not point at a folder; create it by hand")
+    out = (project / out_arg).resolve()
+    restricted_root = key_path.parent.resolve()
+    if out == restricted_root or restricted_root in out.parents:
+        raise SystemExit("output folder must be outside the restricted folder")
+    out.mkdir(parents=True, exist_ok=True)
+
+    files = sorted(p for p in originals.rglob("*") if p.is_file() and p.suffix.lower() in TEXT_SUFFIXES)
+    if not files:
+        print("No .txt or .md files under privacy.originals. Convert transcripts to plain text first.")
+        return 1
+    written, skipped, zero, withheld, total, review_rows = [], [], [], 0, 0, []
+    for src in files:
+        rel = src.relative_to(originals)
+        # File names can identify people too, and they are printed below: only
+        # neutral IDs (lowercase, at least one digit: int-07.txt, 2024-wave2/)
+        # cross the wall, after the key has been applied to them as well.
+        stems = [Path(part).stem if i == len(rel.parts) - 1 else part for i, part in enumerate(rel.parts)]
+        if not all(is_neutral(s, (privacy["id_prefix"], privacy["person_prefix"])) for s in stems):
+            withheld += 1
+            continue
+        dest = out.joinpath(*[redact_text(part, compiled)[0] for part in rel.parts])
+        if dest.exists():
+            skipped.append(dest)
+            continue
+        text = src.read_text(encoding="utf-8", errors="replace")
+        redacted, counts = redact_text(text, compiled)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(redacted, encoding="utf-8")
+        n = sum(counts.values())
+        total += n
+        written.append((dest, n, len(counts)))
+        if n == 0:
+            zero.append(dest)
+        for word, lines in sorted(residual_candidates(redacted, pseudonyms).items()):
+            review_rows.append(f"{dest.relative_to(project)}\t{word}\tlines {','.join(map(str, lines[:12]))}")
+
+    review = restricted_root / "redaction-review.txt"
+    review.write_text("# Candidate names the key did not cover. For the researcher only.\n"
+                      "# file\tword\tlines\n" + "\n".join(review_rows) + "\n", encoding="utf-8")
+
+    print(f"qualstack-redact apply: {len(written)} file(s) written to {out.relative_to(project)}/, "
+          f"{len(skipped)} skipped (output already exists; outputs are never overwritten).")
+    print(f"  replacements: {total} across {len(written)} file(s)")
+    for dest, n, k in written:
+        print(f"  {dest.relative_to(project)}: {n} replacement(s) of {k} keyed entr{'y' if k == 1 else 'ies'}")
+    if withheld:
+        print(f"  WITHHELD: {withheld} file(s) not processed because a folder or file name is not a "
+              "neutral ID (lowercase with a digit, e.g. int-07.txt). Rename them in the restricted "
+              "folder yourself and re-run; names are never printed.")
+    if zero:
+        print(f"  WARNING: {len(zero)} file(s) had zero replacements — check they are the right files "
+              "and that the key covers them.")
+    print(f"  review: {len(review_rows)} candidate name(s) not in the key were listed in the "
+          "restricted folder (redaction-review.txt). Read it yourself; extend the key and re-run "
+          "on new copies if any are real identifiers.")
+    print("  Pseudonymization is not anonymization: read each output for titles, dates, and places "
+          "before it is logged as evidence.")
+    return 0
+
+
+def iter_check_files(project: Path, paths):
+    restricted_root = (project / "restricted").resolve()
+    for p in paths:
+        p = (project / p) if not Path(p).is_absolute() else Path(p)
+        if not p.exists():
+            continue
+        candidates = [p] if p.is_file() else sorted(x for x in p.rglob("*") if x.is_file())
+        for f in candidates:
+            rf = f.resolve()
+            if rf == restricted_root or restricted_root in rf.parents:
+                continue
+            if f.suffix in CHECK_SUFFIXES or f.suffix.lower() in CHECK_SUFFIXES:
+                yield f
+
+
+def cmd_check(project: Path, privacy: dict, paths) -> int:
+    pairs = load_key(project / privacy["key"])
+    compiled = [(pattern_for(v), p) for v, p in pairs]
+    hits = 0
+    scanned = 0
+    for f in iter_check_files(project, paths or DEFAULT_CHECK):
+        scanned += 1
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for n, line in enumerate(lines, start=1):
+            for pat, pseud in compiled:
+                if pat.search(line):
+                    hits += 1
+                    print(f"{f.relative_to(project)}:{n}: contains a real name keyed to {pseud}")
+                    break
+    print(f"qualstack-redact check: {scanned} file(s) scanned, {hits} line(s) with a keyed real name.")
+    return 1 if hits else 0
+
+
+def cmd_status(project: Path, privacy: dict) -> int:
+    key_path = project / privacy["key"]
+    originals = project / privacy["originals"]
+    print(f"privacy.ai_processing: {privacy.get('ai_processing') or '(not set — set it before deidentifying)'}")
+    if key_path.is_file():
+        pairs = load_key(key_path)
+        print(f"key: {len({p for _, p in pairs})} pseudonym(s), {len(pairs)} name variant(s)")
+    else:
+        print("key: missing")
+    if originals.is_dir():
+        files = [p for p in originals.rglob("*") if p.is_file()]
+        text = [p for p in files if p.suffix.lower() in TEXT_SUFFIXES]
+        print(f"originals: {len(files)} file(s), {len(text)} as .txt/.md (only these are processed)")
+    else:
+        print("originals: missing")
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="qualstack-redact",
+                                 description="Pseudonymize transcripts; never prints identifying text.")
+    ap.add_argument("command", choices=["apply", "check", "status"])
+    ap.add_argument("paths", nargs="*", help="check: files or folders to scan")
+    ap.add_argument("--out", default="evidence/raw/interviews", help="apply: output folder")
+    ap.add_argument("--project", default="", help="project folder (default: nearest .qualstack/ above cwd)")
+    opts = ap.parse_args(argv)
+    project = find_project(Path(opts.project or Path.cwd()))
+    if project is None:
+        print("No .qualstack/ found; run this inside a QualStack project.", file=sys.stderr)
+        return 1
+    privacy = read_privacy(project)
+    try:
+        if opts.command == "apply":
+            return cmd_apply(project, privacy, opts.out)
+        if opts.command == "check":
+            return cmd_check(project, privacy, opts.paths)
+        return cmd_status(project, privacy)
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            print(f"qualstack-redact: {exc.code}", file=sys.stderr)
+            return 1
+        raise
+    except UnicodeDecodeError:
+        print("qualstack-redact: a file is not valid UTF-8; convert it and re-run.", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

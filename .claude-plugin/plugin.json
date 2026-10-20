@@ -1,0 +1,24 @@
+{
+  "name": "qualstack",
+  "description": "A Claude Code plugin for qualitative and mixed-method political science, built on Humphreys & Jacobs's Integrated Inferences — role-based slash commands that walk a case-based study from question to archive: causal models, process tracing, case and clue selection, evidence handling, and transparency. Sibling to MStack; inspired by gstack.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Matt DiGiuseppe",
+    "email": "mdigiuseppe@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "academic",
+    "research",
+    "political-science",
+    "qualitative-methods",
+    "process-tracing",
+    "case-studies",
+    "mixed-methods",
+    "causal-models",
+    "bayesian",
+    "integrated-inferences",
+    "causalqueries",
+    "transparency"
+  ]
+}

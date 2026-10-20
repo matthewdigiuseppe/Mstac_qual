@@ -1,0 +1,20 @@
+# Identifiable material never enters version control (or the model's context).
+restricted/
+
+# R and LaTeX by-products
+.Rhistory
+.RData
+.Rproj.user/
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+
+# OS and editor noise
+.DS_Store
+*.swp

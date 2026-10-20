@@ -1,0 +1,46 @@
+% QualStack paper template.
+% /qualstack:draft-section writes into sections/<name>.tex; this file just \input{}s them.
+
+\documentclass[12pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\usepackage{natbib}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{csquotes}
+\usepackage{hyperref}
+\doublespacing
+
+% Evidence citations. \ev{E014} points to row E014 of evidence/log.csv, which the
+% transparency appendix reproduces. /qualstack:evidence-audit checks every \ev{}
+% against the log and every quotation against its source. At submission, redefine
+% the macro to print the full archival or interview citation if the journal asks.
+\newcommand{\ev}[1]{[#1]}
+
+\title{TITLE}
+\author{AUTHOR}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\input{sections/abstract}
+\end{abstract}
+
+\input{sections/intro}
+\input{sections/theory}
+\input{sections/design}
+\input{sections/cases}
+\input{sections/results}
+\input{sections/discussion}
+
+% plainnat ships with every TeX distribution; swap for the journal's own
+% style (e.g. apsr.bst, downloaded from the journal) at submission time.
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\appendix
+\input{sections/appendix}
+
+\end{document}

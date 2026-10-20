@@ -1,0 +1,11 @@
+.DS_Store
+*.swp
+*.bak
+node_modules/
+.env
+.env.local
+__pycache__/
+*.pyc
+.Rhistory
+.RData
+.Rproj.user/

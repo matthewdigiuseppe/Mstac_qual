@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "qualstack",
+  "description": "QualStack — a Claude Code plugin for qualitative and mixed-method political science, built on Integrated Inferences (Humphreys & Jacobs 2023). Sibling to MStack; inspired by gstack.",
+  "owner": {
+    "name": "Matt DiGiuseppe",
+    "email": "mdigiuseppe@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "qualstack",
+      "source": "./",
+      "description": "A Claude Code plugin for qualitative and mixed-method political science — 46 role-based slash commands across the life of a case-based study (ideate, model, design, collect, analyze, write, submit, reflect), built on the causal-model approach of Integrated Inferences and the CausalQueries R package; a methods reference library (process tracing, case and clue selection, mixing methods, sources and interviews, transparency and human-subjects ethics); hook-enforced evidence integrity and a wall around identifiable material.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "homepage": "https://github.com/matthewdigiuseppe/Mstac_qual"
+    }
+  ]
+}

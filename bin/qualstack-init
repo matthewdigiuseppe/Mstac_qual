@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# qualstack-init <project-name> [--quarto]
+# Scaffolds a new project folder from QualStack's templates/project-folder/ tree.
+set -euo pipefail
+
+usage() {
+  cat <<EOF
+Usage: qualstack-init <project-name> [--quarto]
+
+Creates a new QualStack project folder under the current working directory.
+  --quarto    Use a Quarto (.qmd) main file instead of LaTeX.
+
+Examples:
+  qualstack-init wartime-taxation
+  qualstack-init land-reform-chile --quarto
+EOF
+}
+
+if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+NAME="$1"
+shift
+USE_QUARTO=0
+for arg in "$@"; do
+  case "$arg" in
+    --quarto) USE_QUARTO=1 ;;
+    *) echo "Unknown arg: $arg" >&2; usage; exit 1 ;;
+  esac
+done
+
+if [[ ! "$NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  echo "Project name must be a slug: lowercase letters, digits, hyphens (got '$NAME')." >&2
+  exit 1
+fi
+
+# Refuse to nest: a project inside a project breaks every path convention.
+dir="$(pwd)"
+while [[ "$dir" != "/" ]]; do
+  if [[ -d "$dir/.qualstack" ]]; then
+    echo "Refusing to nest: $dir is already a QualStack project. cd out of it first." >&2
+    exit 1
+  fi
+  dir="$(dirname "$dir")"
+done
+
+# Resolve QualStack root (the script lives in bin/, so .. is root).
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+QUALSTACK_ROOT="$(cd "$HERE/.." && pwd)"
+TEMPLATE="$QUALSTACK_ROOT/templates/project-folder"
+
+if [[ ! -d "$TEMPLATE" ]]; then
+  echo "Template not found at $TEMPLATE" >&2
+  exit 1
+fi
+
+DEST="$(pwd)/$NAME"
+if [[ -e "$DEST" ]]; then
+  echo "Refusing to overwrite existing $DEST" >&2
+  exit 1
+fi
+
+# Copy template (preserve hidden files).
+cp -R "$TEMPLATE" "$DEST"
+# The template's own .gitignore excludes restricted/, so a checkout of QualStack
+# may lack it; every project needs the folder.
+mkdir -p "$DEST/restricted"
+
+# Stamp the short_name into config.yaml.
+CFG="$DEST/.qualstack/config.yaml"
+if [[ -f "$CFG" ]]; then
+  # macOS sed needs '' after -i; use a temp file for portability.
+  tmp="$(mktemp)"
+  awk -v n="$NAME" '
+    /^  short_name: ""/ { sub(/short_name: ""/, "short_name: \"" n "\""); print; next }
+    { print }
+  ' "$CFG" > "$tmp" && mv "$tmp" "$CFG"
+fi
+
+# Quarto swap.
+if [[ "$USE_QUARTO" == "1" && -f "$DEST/paper/main.tex" ]]; then
+  rm "$DEST/paper/main.tex"
+  cat > "$DEST/paper/main.qmd" <<'QMD'
+---
+title: "TITLE"
+author: "AUTHOR"
+format:
+  pdf:
+    documentclass: article
+    geometry: margin=1in
+    fontsize: 12pt
+bibliography: refs.bib
+---
+
+<!-- Evidence citations: write [E014] for row E014 of evidence/log.csv; the
+     transparency appendix reproduces the log. /qualstack:evidence-audit checks
+     every [E###] against the log and every quotation against its source. -->
+
+{{< include sections/abstract.qmd >}}
+
+{{< include sections/intro.qmd >}}
+{{< include sections/theory.qmd >}}
+{{< include sections/design.qmd >}}
+{{< include sections/cases.qmd >}}
+{{< include sections/results.qmd >}}
+{{< include sections/discussion.qmd >}}
+
+# Appendix {.appendix}
+
+{{< include sections/appendix.qmd >}}
+QMD
+  # Convert the section stubs to .qmd (main.qmd includes sections/*.qmd).
+  for f in "$DEST"/paper/sections/*.tex; do
+    [[ -f "$f" ]] || continue
+    base="${f%.tex}"
+    sed 's|^% \(.*\)$|<!-- \1 -->|' "$f" > "$base.qmd"
+    rm "$f"
+  done
+  if [[ -f "$CFG" ]]; then
+    tmp="$(mktemp)"
+    awk '
+      /^  format: "latex"/ { sub(/format: "latex"/, "format: \"quarto\""); print; next }
+      { print }
+    ' "$CFG" > "$tmp" && mv "$tmp" "$CFG"
+  fi
+fi
+
+echo "Scaffolded $DEST"
+echo ""
+echo "Next:"
+echo "  cd $NAME"
+echo "  edit .qualstack/config.yaml (title, authors, target journals, privacy.ai_processing)"
+echo "  start with /qualstack:research-question or /qualstack:idea-shotgun in Claude Code"

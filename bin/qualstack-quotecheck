@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""qualstack-quotecheck — does every quotation in the paper say what its source says?
+
+Backs /qualstack:evidence-audit. Qualitative papers stand or fall on quoted
+evidence, and the commonest error a replicator finds is not a fabricated quote
+but a drifted one: a word changed in transcription, an ellipsis that removed a
+"not", a quote attributed to the wrong document. This script checks every
+quotation in the manuscript against the text of the source it cites.
+
+Quotations it finds: ``...'' and \\enquote{...} / \\textquote{...} in LaTeX,
+"..." and curly quotes in Quarto/Markdown, quote/quotation/displayquote
+environments, and Markdown block quotes. Quotes shorter than --min-words
+(default 5) are skipped as scare quotes and terms of art.
+
+Citations it reads, in the 300 characters after a quotation: \\ev{E014} (or
+\\ev{E014, E015}), [E014] / (E014), and \\cite-family keys. An evidence ID is
+looked up in evidence/log.csv, whose `file` column lists the item's files
+(";"-separated); a PDF is checked through its converted text in evidence/md/
+(qualstack-pdf2md --name-by-file). A cite key is checked against lit/md/<key>.md.
+
+Matching works on words, after folding case, accents, quotation marks, dashes,
+and line-break hyphenation. Ellipses (..., \\ldots, …) and bracketed
+insertions ([the minister], [sic]) split a quotation into fragments that must
+appear in order. Statuses:
+
+  verified    every fragment found, in order, in the cited source
+  near        only an approximate match (>= 0.85 word similarity): a
+              transcription or OCR difference to check by eye
+  elsewhere   not in the cited source but found in another item: a
+              misattributed quotation
+  uncited     no citation after the quotation (the item it was found in, if any,
+              is named)
+  not-found   no source contains it
+  unchecked   the cited source has no readable text (restricted, not converted,
+              or not on disk)
+
+Files under restricted/ are never opened. Exit 1 when any quotation is
+not-found, elsewhere, or uncited-and-not-found.
+
+Usage:
+  qualstack-quotecheck                       # paper/ of the project at or above cwd
+  qualstack-quotecheck paper/sections/cases.tex
+  qualstack-quotecheck --json | --min-words 4
+
+Standard library only.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import difflib
+import json
+import re
+import sys
+import unicodedata
+from pathlib import Path
+
+ELLIPSIS = "\u0000"
+NEAR = 0.85
+ID_RE = r"[A-Z]{1,3}\d{2,5}"
+
+LATEX_REPL = [
+    (r"\\(?:ldots|dots|textellipsis)\b\{?\}?", " ... "),
+    (r"\\(?:emph|textit|textbf|textsc|textup|underline|mbox|textnormal)\{", "{"),
+    (r"\\[,;:!]", " "),
+    (r"\\(?:%|&|\$|#|_)", lambda m: m.group(0)[1]),
+    (r"~", " "),
+    (r"\\\\", " "),
+    (r"\\'\{?(\w)\}?", r"\1"), (r"\\`\{?(\w)\}?", r"\1"), (r'\\"\{?(\w)\}?', r"\1"),
+    (r"\\\^\{?(\w)\}?", r"\1"), (r"\\~\{?(\w)\}?", r"\1"), (r"\\c\{(\w)\}", r"\1"),
+    (r"\\footnote\{[^{}]*\}", " "),
+    (r"\\ev\{[^{}]*\}", " "),
+    (r"\\[a-zA-Z]+\*?(\[[^\]]*\])?", " "),
+    (r"[{}]", ""),
+]
+
+
+def find_project(start: Path):
+    p = start.resolve()
+    for c in [p, *p.parents]:
+        if (c / ".qualstack").is_dir():
+            return c
+    return None
+
+
+def is_restricted(path: Path, project: Path) -> bool:
+    try:
+        rel = path.resolve().relative_to(project.resolve())
+    except ValueError:
+        return False
+    return bool(rel.parts) and rel.parts[0] == "restricted"
+
+
+def fold(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return text.lower()
+
+
+def words(text: str):
+    text = fold(text)
+    text = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text)  # line-break hyphenation
+    text = text.replace("\u2019", "'").replace("\u2018", "'")
+    return re.findall(r"[a-z0-9]+(?:'[a-z]+)?", text)
+
+
+def clean_latex(s: str) -> str:
+    for pat, rep in LATEX_REPL:
+        s = re.sub(pat, rep, s)
+    return s
+
+
+def fragments(quote: str):
+    """Split a quotation at ellipses and bracketed insertions into word lists."""
+    q = quote.replace("\u2026", " ... ")
+    q = re.sub(r"\[[^\]]*\]", f" {ELLIPSIS} ", q)
+    q = re.sub(r"\.\s*\.\s*\.", f" {ELLIPSIS} ", q)
+    parts = [words(part) for part in q.split(ELLIPSIS)]
+    return [p for p in parts if len(p) >= 2] or [p for p in parts if p]
+
+
+def find_seq(hay, needle, start=0):
+    if not needle:
+        return start
+    first = needle[0]
+    n = len(needle)
+    i = start
+    while True:
+        try:
+            i = hay.index(first, i)
+        except ValueError:
+            return -1
+        if hay[i:i + n] == needle:
+            return i
+        i += 1
+
+
+def exact_match(src_words, frags) -> bool:
+    pos = 0
+    for frag in frags:
+        i = find_seq(src_words, frag, pos)
+        if i < 0:
+            return False
+        pos = i + len(frag)
+    return True
+
+
+def near_score(src_words, frags) -> float:
+    """Best similarity of the longest fragment against same-length windows."""
+    if not frags or not src_words:
+        return 0.0
+    frag = max(frags, key=len)
+    n = len(frag)
+    # Align on rare-ish words: each occurrence of a fragment word in the source
+    # proposes a start; windows a little shorter or longer absorb an inserted
+    # or dropped word.
+    positions = {}
+    for j, w in enumerate(frag):
+        if len(w) > 3:
+            positions.setdefault(w, []).append(j)
+    best = 0.0
+    seen = set()
+    sm = difflib.SequenceMatcher(autojunk=False)
+    sm.set_seq2(frag)
+    for i, w in enumerate(src_words):
+        for j in positions.get(w, ()):
+            start = max(0, i - j)
+            for length in (n - 1, n, n + 1, n + 2):
+                if (start, length) in seen or length < 1:
+                    continue
+                seen.add((start, length))
+                sm.set_seq1(src_words[start:start + length])
+                r = sm.ratio()
+                if r > best:
+                    best = r
+    return best
+
+
+def extract_quotes(text: str, suffix: str):
+    """Yield (quote, line_no, tail) for each quotation; tail is what follows it."""
+    out = []
+    patterns = []
+    if suffix in (".tex",):
+        patterns += [
+            re.compile(r"``(.+?)''", re.S),
+            re.compile(r"\\(?:enquote|textquote|blockquote)\*?(?:\[[^\]]*\])?\{((?:[^{}]|\{[^{}]*\})+)\}", re.S),
+            re.compile(r"\\begin\{(?:quote|quotation|displayquote)\}(.+?)\\end\{(?:quote|quotation|displayquote)\}", re.S),
+        ]
+    patterns += [
+        re.compile(r"\u201c(.+?)\u201d", re.S),
+    ]
+    if suffix in (".qmd", ".md", ".markdown", ".rmd"):
+        patterns += [re.compile(r'(?<![\w=])"([^"\n]+(?:\n[^"\n]+)*)"(?!\w)')]
+    for pat in patterns:
+        for m in pat.finditer(text):
+            line_no = text.count("\n", 0, m.start()) + 1
+            out.append((m.group(1), line_no, text[m.end(): m.end() + 300]))
+    if suffix in (".qmd", ".md", ".markdown", ".rmd"):
+        block, start = [], 0
+        lines = text.splitlines()
+        for i, line in enumerate(lines + [""], start=1):
+            if line.startswith(">"):
+                if not block:
+                    start = i
+                block.append(line.lstrip("> ").rstrip())
+            elif block:
+                tail = "\n".join(lines[i - 1:i + 3])
+                out.append((" ".join(block), start, tail))
+                block = []
+    return sorted(out, key=lambda t: t[1])
+
+
+def citations_in(tail: str):
+    """Evidence IDs and cite keys that follow a quotation, before the next quotation."""
+    tail = re.split(r"``|\u201c|\\enquote|\n\s*\n", tail)[0]
+    ids, keys = [], []
+    for m in re.finditer(r"\\ev\{([^{}]+)\}", tail):
+        ids += [x.strip() for x in m.group(1).split(",") if x.strip()]
+    for m in re.finditer(r"[\[(]\s*(" + ID_RE + r"(?:\s*[,;]\s*" + ID_RE + r")*)\s*[\])]", tail):
+        ids += [x.strip() for x in re.split(r"[,;]", m.group(1)) if x.strip()]
+    for m in re.finditer(r"\\(?:cite|citep|citet|citealt|citeauthor|parencite|textcite|autocite)\*?"
+                         r"(?:\[[^\]]*\]){0,2}\{([^{}]+)\}", tail):
+        keys += [x.strip() for x in m.group(1).split(",") if x.strip()]
+    for m in re.finditer(r"\[@([\w:.-]+)", tail):
+        keys.append(m.group(1))
+    return list(dict.fromkeys(ids)), list(dict.fromkeys(keys))
+
+
+def load_log(project: Path):
+    log = project / "evidence" / "log.csv"
+    items = {}
+    if not log.is_file():
+        return items
+    with log.open(newline="", encoding="utf-8-sig") as fh:
+        for row in csv.DictReader(fh):
+            eid = (row.get("id") or "").strip()
+            if eid:
+                items[eid] = row
+    return items
+
+
+def text_files_for(project: Path, row) -> list:
+    out = []
+    for f in (row.get("file") or "").split(";"):
+        f = f.strip()
+        if not f:
+            continue
+        p = project / f
+        if is_restricted(p, project):
+            continue
+        if p.suffix.lower() == ".pdf":
+            conv = project / "evidence" / "md" / (re.sub(r"[^\w.-]+", "-", p.stem).strip("-") + ".md")
+            if conv.is_file():
+                out.append(conv)
+        elif p.is_file() and p.suffix.lower() in (".txt", ".md", ".markdown"):
+            out.append(p)
+        elif p.is_dir():
+            out += sorted(x for x in p.rglob("*") if x.suffix.lower() in (".txt", ".md"))
+    eid = (row.get("id") or "").strip()
+    for conv in sorted((project / "evidence" / "md").glob(f"{eid}*.md")) if eid else []:
+        if conv not in out:
+            out.append(conv)
+    return out
+
+
+class Corpus:
+    def __init__(self, project: Path):
+        self.project = project
+        self.items = load_log(project)
+        self.cache = {}
+
+    def words_of(self, path: Path):
+        if path not in self.cache:
+            try:
+                raw = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                raw = ""
+            self.cache[path] = words(raw)
+        return self.cache[path]
+
+    def evidence_sources(self, eid):
+        row = self.items.get(eid)
+        return text_files_for(self.project, row) if row else None
+
+    def lit_sources(self, key):
+        p = self.project / "lit" / "md" / f"{key}.md"
+        return [p] if p.is_file() else []
+
+    def all_sources(self):
+        seen = []
+        for eid, row in self.items.items():
+            for p in text_files_for(self.project, row):
+                seen.append((eid, p))
+        for p in sorted((self.project / "lit" / "md").glob("*.md")):
+            if not p.name.endswith(".refs.md"):
+                seen.append((p.stem, p))
+        return seen
+
+
+def check(corpus: Corpus, quote: str, ids, keys):
+    frags = fragments(clean_latex(quote))
+    cited = []
+    missing_ids, unreadable = [], []
+    for eid in ids:
+        files = corpus.evidence_sources(eid)
+        if files is None:
+            missing_ids.append(eid)
+        elif not files:
+            unreadable.append(eid)
+        else:
+            cited += [(eid, f) for f in files]
+    for key in keys:
+        files = corpus.lit_sources(key)
+        if files:
+            cited += [(key, f) for f in files]
+        else:
+            unreadable.append(key)
+
+    for label, f in cited:
+        if exact_match(corpus.words_of(f), frags):
+            return "verified", label, f, 1.0
+    best = (0.0, None, None)
+    for label, f in cited:
+        s = near_score(corpus.words_of(f), frags)
+        if s > best[0]:
+            best = (s, label, f)
+    if best[0] >= NEAR:
+        return "near", best[1], best[2], best[0]
+
+    # Not in what it cites (or cites nothing): search everything else.
+    cited_paths = {f for _, f in cited}
+    other = None
+    for label, f in corpus.all_sources():
+        if f not in cited_paths and exact_match(corpus.words_of(f), frags):
+            other = (label, f)
+            break
+    if missing_ids:
+        return "not-found", ",".join(missing_ids) + " (not in evidence/log.csv)", None, best[0]
+    if unreadable and not cited:
+        # The cited item cannot be read, so misattribution cannot be shown.
+        note = f"{','.join(unreadable)} has no readable text"
+        if other:
+            note += f"; the words also appear in {other[0]}"
+        return "unchecked", note, None, 0.0
+    if other:
+        return ("elsewhere" if (ids or keys) else "uncited"), other[0], other[1], 1.0
+    if not ids and not keys:
+        return "uncited", "", None, 0.0
+    return "not-found", "", None, best[0]
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="qualstack-quotecheck",
+                                 description="Verify manuscript quotations against their sources.")
+    ap.add_argument("paths", nargs="*", help="manuscript files (default: paper/main.* and paper/sections/*)")
+    ap.add_argument("--project", default="", help="project folder (default: nearest .qualstack/ above cwd)")
+    ap.add_argument("--min-words", type=int, default=5, help="skip quotations shorter than this (default 5)")
+    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    opts = ap.parse_args(argv)
+
+    project = find_project(Path(opts.project or Path.cwd()))
+    if project is None:
+        print("No .qualstack/ found; run inside a QualStack project.", file=sys.stderr)
+        return 1
+    if opts.paths:
+        files = [Path(p) if Path(p).is_absolute() else Path.cwd() / p for p in opts.paths]
+    else:
+        files = sorted(set((project / "paper").glob("main.*")) |
+                       set((project / "paper" / "sections").glob("*.tex")) |
+                       set((project / "paper" / "sections").glob("*.qmd")) |
+                       set((project / "paper" / "sections").glob("*.md")))
+    corpus = Corpus(project)
+    results = []
+    for f in files:
+        if not f.is_file() or is_restricted(f, project):
+            continue
+        text = f.read_text(encoding="utf-8", errors="replace")
+        if f.suffix == ".tex":
+            text = re.sub(r"(?<!\\)%.*", "", text)  # drop LaTeX comments
+        for quote, line_no, tail in extract_quotes(text, f.suffix.lower()):
+            n_words = len(words(clean_latex(quote)))
+            if n_words < opts.min_words:
+                continue
+            ids, keys = citations_in(tail)
+            status, where, src, score = check(corpus, quote, ids, keys)
+            results.append({
+                "file": str(f.relative_to(project)) if f.is_relative_to(project) else str(f),
+                "line": line_no, "words": n_words,
+                "quote": re.sub(r"\s+", " ", clean_latex(quote)).strip(),
+                "cites": ids + keys, "status": status, "found_in": where or "",
+                "source": str(src.relative_to(project)) if src else "",
+                "similarity": round(score, 2),
+            })
+
+    bad = [r for r in results if r["status"] in ("not-found", "elsewhere")
+           or (r["status"] == "uncited" and not r["source"])]
+    if opts.json:
+        print(json.dumps({"project": str(project), "quotes": results,
+                          "problems": len(bad)}, indent=2))
+        return 1 if bad else 0
+
+    counts = {}
+    for r in results:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    print(f"qualstack-quotecheck: {len(results)} quotation(s) of {opts.min_words}+ words in "
+          f"{len(files)} file(s): " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    print()
+    print("| status | where | cites | found in | quote |")
+    print("|---|---|---|---|---|")
+    order = {"not-found": 0, "elsewhere": 1, "uncited": 2, "near": 3, "unchecked": 4, "verified": 5}
+    for r in sorted(results, key=lambda r: (order.get(r["status"], 9), r["file"], r["line"])):
+        q = r["quote"] if len(r["quote"]) <= 90 else r["quote"][:87] + "..."
+        found = r["source"] or r["found_in"]
+        if r["status"] == "near":
+            found += f" ({r['similarity']:.2f})"
+        print(f"| {r['status']} | {r['file']}:{r['line']} | {', '.join(r['cites']) or '—'} | "
+              f"{found or '—'} | {q.replace('|', '/')} |")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

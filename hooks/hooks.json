@@ -1,0 +1,16 @@
+{
+  "description": "QualStack enforcement. Keeps restricted/ (identifiable material) out of the model's context, keeps evidence/raw/, data/raw/, and lit/pdf/ read-only once files exist, locks a registered preregistration, and backs /qualstack:careful and /qualstack:freeze with real PreToolUse checks.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/qualstack-guard.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

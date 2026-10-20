@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""qualstack-lint — consistency checks for the QualStack skill set.
+
+Run from anywhere: python3 bin/qualstack-lint
+Exit 0 = clean (warnings allowed), 1 = errors.
+
+Checks:
+  * every skills/<dir>/SKILL.md parses, and frontmatter `name` == <dir>
+  * description present, single-line, non-empty, <= 1024 chars
+  * no `user-invocable: true` (redundant — it's the default)
+  * every /qualstack:<name> reference resolves to an existing skill
+  * no bare /<skill-name> references (plugin skills are namespaced)
+  * $ARGUMENTS in a body implies an argument-hint (warning)
+  * every skill appears in docs/skills.md (warning)
+  * commands a body tells Claude to run are covered by allowed-tools (warning)
+  * every ${CLAUDE_PLUGIN_ROOT}/... file a body names exists
+  * every agents/<name>.md parses, and frontmatter `name` == <name>
+  * plugin agents use only the frontmatter fields plugins support
+  * every qualstack:<agent> a skill body names resolves to a shipped agent
+  * every skill names its stage and voice, and has Procedure and Outputs (warning)
+  * every ${CLAUDE_PLUGIN_ROOT}/... file a reference or agent names exists
+  * bin/ scripts byte-compile
+  * hooks/hooks.json is valid JSON; hook scripts byte-compile
+"""
+import json
+import os
+import py_compile
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SKILLS = ROOT / "skills"
+
+errors, warnings = [], []
+
+
+# Commands a skill body may tell Claude to run. Each needs a Bash allowance
+# (bare "Bash", or a "Bash(prefix *)" whose prefix covers the command).
+RUN_TOKENS = ("Rscript", "python3", "sha256sum", "pdftotext", "texcount", "latexmk",
+              "pdflatex", "quarto render", "git log", "git rev-parse", "git diff",
+              "date +", "wc -")
+
+
+def allowed_tools(text):
+    m = re.match(r"\A---\n(.*?\n)---\n", text, re.S)
+    tools, in_list = [], False
+    for line in (m.group(1).splitlines() if m else []):
+        if line.startswith("allowed-tools:"):
+            in_list = True
+        elif in_list and line.startswith("  - "):
+            tools.append(line[4:].strip())
+        elif in_list and not line.startswith(" "):
+            in_list = False
+    return tools
+
+
+def check_tools(text, label):
+    body = text.split("\n---\n", 1)[-1]
+    used = [tok for tok in RUN_TOKENS if tok in body]
+    if not used:
+        return
+    bash = [t for t in allowed_tools(text) if t == "Bash" or t.startswith("Bash(")]
+    if not bash:
+        warnings.append(f"{label}: body runs {used} but allowed-tools has no Bash entry")
+        return
+    if "Bash" in bash:
+        return
+    prefixes = [b[5:-1].rstrip(" *") for b in bash]
+    for tok in used:
+        if not any(tok.startswith(p) or p.startswith(tok) for p in prefixes):
+            warnings.append(f"{label}: body runs '{tok}' but allowed-tools only permits {bash}")
+
+
+def parse_frontmatter(text, label):
+    m = re.match(r"\A---\n(.*?\n)---\n", text, re.S)
+    if not m:
+        errors.append(f"{label}: missing frontmatter")
+        return {}
+    fm = {}
+    for line in m.group(1).splitlines():
+        if line[:1] not in (" ", "\t", "-", "#") and ":" in line:
+            key, _, value = line.partition(":")
+            fm[key.strip()] = value.strip()
+    return fm
+
+
+skill_names = sorted(p.name for p in SKILLS.iterdir() if p.is_dir())
+
+for name in skill_names:
+    path = SKILLS / name / "SKILL.md"
+    label = f"skills/{name}/SKILL.md"
+    if not path.exists():
+        errors.append(f"{label}: missing")
+        continue
+    text = path.read_text()
+    fm = parse_frontmatter(text, label)
+    if fm.get("name") != name:
+        errors.append(f"{label}: frontmatter name {fm.get('name')!r} != directory {name!r}")
+    desc = fm.get("description", "")
+    if not desc:
+        errors.append(f"{label}: missing/empty description")
+    elif len(desc) > 1024:
+        errors.append(f"{label}: description is {len(desc)} chars (> 1024)")
+    if fm.get("user-invocable") == "true":
+        errors.append(f"{label}: 'user-invocable: true' is redundant (it's the default) — remove it")
+    if "$ARGUMENTS" in text and "argument-hint" not in fm:
+        warnings.append(f"{label}: uses $ARGUMENTS but has no argument-hint")
+    check_tools(text, label)
+    body = text.split("\n---\n", 1)[-1]
+    if not re.search(r"^\*\*Stage:\*\* .+ · \*\*Voice:\*\* ", body, re.M):
+        warnings.append(f"{label}: no '**Stage:** … · **Voice:** …' line")
+    for heading in ("## Procedure", "## Outputs"):
+        if heading not in body:
+            warnings.append(f"{label}: no '{heading}' section")
+
+# Cross-references: namespaced ones must exist; bare ones are forbidden.
+ref_files = (
+    list(SKILLS.glob("*/SKILL.md"))
+    + list((ROOT / "docs").glob("*.md"))
+    + [ROOT / "README.md"]
+    + list((ROOT / "references").glob("*.md"))
+    + list((ROOT / "templates").rglob("*.md"))
+    + list((ROOT / "templates").rglob("*.tex"))
+    + list((ROOT / "templates").rglob("*.yaml"))
+)
+ns_ref = re.compile(r"/qualstack:([a-z0-9-]+)")
+bare_ref = re.compile(r"(?<![\w.:@/-])/(" + "|".join(map(re.escape, skill_names)) + r")\b")
+for f in ref_files:
+    if not f.exists():
+        continue
+    rel = f.relative_to(ROOT)
+    text = f.read_text()
+    for m in ns_ref.finditer(text):
+        if m.group(1) not in skill_names:
+            errors.append(f"{rel}: reference to unknown skill /qualstack:{m.group(1)}")
+    for m in bare_ref.finditer(text):
+        errors.append(f"{rel}: bare reference {m.group(0)!r} — use /qualstack:{m.group(1)}")
+
+# Bundled files a skill, reference, or agent points at must exist.
+plugin_file = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)")
+for f in sorted(list(SKILLS.glob("*/SKILL.md")) + list((ROOT / "references").glob("*.md"))
+                + list((ROOT / "agents").glob("*.md"))):
+    rel = f.relative_to(ROOT)
+    for m in plugin_file.finditer(f.read_text()):
+        target = ROOT / m.group(1).rstrip(".")
+        if not target.exists():
+            errors.append(f"{rel}: ${{CLAUDE_PLUGIN_ROOT}}/{m.group(1)} does not exist")
+
+# Plugin agents: frontmatter validity and the fields plugins actually support.
+# Claude Code ignores hooks/mcpServers/permissionMode on a plugin-shipped agent,
+# so declaring them is a silent no-op rather than the protection it looks like.
+AGENT_FIELDS = {"name", "description", "model", "effort", "maxTurns", "tools",
+                "disallowedTools", "skills", "memory", "background",
+                "omitClaudeMd", "isolation"}
+agents_dir = ROOT / "agents"
+agent_names = []
+if agents_dir.is_dir():
+    for path in sorted(agents_dir.glob("*.md")):
+        label = f"agents/{path.name}"
+        stem = path.stem
+        agent_names.append(stem)
+        fm = parse_frontmatter(path.read_text(), label)
+        if fm.get("name") != stem:
+            errors.append(f"{label}: frontmatter name {fm.get('name')!r} != filename {stem!r}")
+        if not fm.get("description"):
+            errors.append(f"{label}: missing/empty description")
+        for key in sorted(set(fm) - AGENT_FIELDS):
+            errors.append(f"{label}: '{key}' is not supported on a plugin agent and is ignored")
+
+# Every qualstack:<agent> a skill body names must be a shipped agent.
+agent_ref = re.compile(r"qualstack:([a-z0-9-]+)")
+for f in sorted(SKILLS.glob("*/SKILL.md")):
+    rel = f.relative_to(ROOT)
+    for m in agent_ref.finditer(f.read_text()):
+        name = m.group(1)
+        if name in skill_names or name in agent_names:
+            continue
+        errors.append(f"{rel}: qualstack:{name} is neither a skill nor an agent")
+
+# Docs coverage.
+docs_skills = (ROOT / "docs" / "skills.md").read_text()
+for name in skill_names:
+    if f"/qualstack:{name}" not in docs_skills:
+        warnings.append(f"docs/skills.md: no row mentions /qualstack:{name}")
+
+# Hooks.
+hooks_json = ROOT / "hooks" / "hooks.json"
+if hooks_json.exists():
+    try:
+        json.loads(hooks_json.read_text())
+    except json.JSONDecodeError as e:
+        errors.append(f"hooks/hooks.json: invalid JSON ({e})")
+bin_scripts = [p for p in (ROOT / "bin").iterdir()
+               if p.is_file() and p.read_bytes().startswith(b"#!/usr/bin/env python3")]
+for script in list((ROOT / "hooks").glob("*.py")) + bin_scripts:
+    with tempfile.NamedTemporaryFile(suffix=".pyc", delete=False) as tmp:
+        cfile = tmp.name
+    try:
+        py_compile.compile(str(script), cfile=cfile, doraise=True)
+    except py_compile.PyCompileError as e:
+        errors.append(f"{script.relative_to(ROOT)}: {e.msg}")
+    finally:
+        os.unlink(cfile)
+
+for w in warnings:
+    print(f"WARN  {w}")
+for e in errors:
+    print(f"ERROR {e}")
+print(f"\n{len(skill_names)} skills checked: {len(errors)} error(s), {len(warnings)} warning(s)")
+sys.exit(1 if errors else 0)

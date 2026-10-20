@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# qualstack-upgrade — pull the latest QualStack into this clone.
+#
+# Pulling updates the files; Claude Code still has to reload them. How depends
+# on how the skills were registered:
+#   * installed from GitHub  -> /plugin marketplace update qualstack
+#   * installed from this clone -> /plugin marketplace update qualstack (it re-reads
+#     this directory), or reinstall with /plugin install qualstack@qualstack
+# Either way, restart Claude Code afterwards so the reloaded skills take effect.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+QUALSTACK_ROOT="$(cd "$HERE/.." && pwd)"
+
+if [[ ! -d "$QUALSTACK_ROOT/.git" ]]; then
+  echo "QualStack root at $QUALSTACK_ROOT is not a git checkout; cannot upgrade." >&2
+  echo "For a marketplace install, run: /plugin marketplace update qualstack" >&2
+  exit 1
+fi
+
+before="$(git -C "$QUALSTACK_ROOT" rev-parse --short HEAD)"
+version_before="$(grep -o '"version": "[^"]*"' "$QUALSTACK_ROOT/.claude-plugin/plugin.json" | head -1 | cut -d'"' -f4)"
+
+echo "Pulling latest QualStack into $QUALSTACK_ROOT..."
+git -C "$QUALSTACK_ROOT" pull --ff-only
+
+after="$(git -C "$QUALSTACK_ROOT" rev-parse --short HEAD)"
+version_after="$(grep -o '"version": "[^"]*"' "$QUALSTACK_ROOT/.claude-plugin/plugin.json" | head -1 | cut -d'"' -f4)"
+
+if [[ "$before" == "$after" ]]; then
+  echo "Already up to date at $after (version $version_after)."
+  exit 0
+fi
+
+echo ""
+echo "Updated $before -> $after (version $version_before -> $version_after)."
+echo "Skills, agents, and references changed:"
+git -C "$QUALSTACK_ROOT" diff --name-only "$before" "$after" -- skills agents references \
+  | sed 's|^|  |' || true
+echo ""
+echo "Re-running setup (PATH and permissions)..."
+"$QUALSTACK_ROOT/setup"
+
+echo ""
+echo "Now reload the skills in Claude Code:"
+echo "  /plugin marketplace update qualstack"
+echo "then restart Claude Code."

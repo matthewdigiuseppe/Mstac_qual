@@ -1,0 +1,4 @@
+{"_comment": "One JSON object per line. Append project-specific conventions Claude should remember. Examples below — delete and replace."}
+{"kind": "convention", "fact": "The unit is the democratization episode, not the country-year; cases are named ISO3-year (CHL-1990)."}
+{"kind": "variable_name", "fact": "The clue node for elite bargaining is B, coded from E-series archival items only."}
+{"kind": "preference", "fact": "Quote interviewees by pseudonym and role (P07, senior ministry official), never by date and place together."}
